@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A universal build has no AVX2 translation unit: the x86_64 slice
+          # runs on the SSE2 baseline. The two single-arch lanes below cover the
+          # AVX2 path, and the arm64 lanes NEON.
+          - name: macOS Universal
+            os: macos-latest
+            cmake-flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"'
+          - name: macOS arm64
+            os: macos-latest
+            cmake-flags: ''
+          - name: Linux GCC
+            os: ubuntu-latest
+            cmake-flags: '-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++'
+          - name: Linux Clang
+            os: ubuntu-latest
+            cmake-flags: '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++'
+          - name: Windows MSVC
+            os: windows-latest
+            msvc-arch: x64
+            cmake-flags: ''
+          - name: Windows Clang
+            os: windows-latest
+            msvc-arch: x64
+            cmake-flags: '-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl'
+          - name: Windows MSVC ARM64
+            os: windows-11-arm
+            msvc-arch: arm64
+            cmake-flags: ''
+          - name: Windows Clang ARM64
+            os: windows-11-arm
+            msvc-arch: arm64
+            cmake-flags: '-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Ninja
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: egor-tensin/vs-shell@54e4148eac794e4580591c2e0b7750f14b7891fc # v2
+        with:
+          arch: ${{ matrix.msvc-arch }}
+
+      # Debug on purpose: the library forces its own optimization level in every
+      # configuration, and this is the configuration where that has to hold.
+      - name: Configure
+        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DESIMD_UNITY_BUILD=ON ${{ matrix.cmake-flags }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j 4
+
+      - name: Bench
+        run: ./build/Tests/ESIMDBench
+        shell: bash
