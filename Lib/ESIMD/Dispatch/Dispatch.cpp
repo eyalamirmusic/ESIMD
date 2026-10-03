@@ -59,6 +59,46 @@ WarpFn pickWarpAffineInverse() noexcept
 #endif
 }
 
+using ScanFn = int (*)(const std::uint8_t*, int, const ByteClass&);
+
+// The three scans share one selection: a byte-at-a-time classification is
+// compute-bound, so the 32-lane AVX2 path is worth its dispatch.
+struct ScanBackend
+{
+    ScanFn findFirst;
+    ScanFn findFirstNot;
+    ScanFn countOf;
+};
+
+ScanBackend pickScanBackend() noexcept
+{
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(ESIMD_HAS_AVX2)
+    if (cpu::hasAvx2Fma())
+        return {&backends::findFirst_avx2,
+                &backends::findFirstNot_avx2,
+                &backends::countOf_avx2};
+#endif
+    return {&backends::findFirst_sse2,
+            &backends::findFirstNot_sse2,
+            &backends::countOf_sse2};
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return {&backends::findFirst_neon,
+            &backends::findFirstNot_neon,
+            &backends::countOf_neon};
+#else
+    return {&backends::findFirst_scalar,
+            &backends::findFirstNot_scalar,
+            &backends::countOf_scalar};
+#endif
+}
+
+const ScanBackend& scanBackend() noexcept
+{
+    static const ScanBackend backend = pickScanBackend();
+    return backend;
+}
+
 } // namespace
 
 void swapRedBlue(const std::uint8_t* in, std::uint8_t* out, int pixelCount)
@@ -115,6 +155,21 @@ void warpAffineInverse(const std::uint8_t* src,
 {
     static const WarpFn fn = pickWarpAffineInverse();
     fn(src, srcWidth, srcHeight, inverse2x3, dst, dstWidth, dstHeight);
+}
+
+int findFirst(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return scanBackend().findFirst(data, count, cls);
+}
+
+int findFirstNot(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return scanBackend().findFirstNot(data, count, cls);
+}
+
+int countOf(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return scanBackend().countOf(data, count, cls);
 }
 
 } // namespace esimd

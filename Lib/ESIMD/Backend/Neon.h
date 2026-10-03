@@ -13,6 +13,44 @@ namespace esimd::backend
 
 struct Neon
 {
+    // Sixteen byte lanes (128-bit). Comparisons yield all-ones / all-zeros.
+    struct U8
+    {
+        U8 operator&(U8 o) const { return {vandq_u8(v, o.v)}; }
+        U8 operator|(U8 o) const { return {vorrq_u8(v, o.v)}; }
+        U8 operator~() const { return {vmvnq_u8(v)}; }
+
+        U8 equals(U8 o) const { return {vceqq_u8(v, o.v)}; }
+
+        // Unsigned this < o.
+        U8 lessThan(U8 o) const { return {vcltq_u8(v, o.v)}; }
+
+        static U8 broadcast(std::uint8_t x) { return {vdupq_n_u8(x)}; }
+        static U8 load(const std::uint8_t* p) { return {vld1q_u8(p)}; }
+
+        // One bit per lane, set where the lane is all-ones. The lanes must be
+        // comparison results (all-ones or all-zeros).
+        //
+        // NEON has no movemask. Each lane is masked down to the bit weight of
+        // its position within its 8-lane half, and a horizontal add of each
+        // half packs those weights into one byte: the weights are disjoint, so
+        // the add is an OR.
+        std::uint32_t bitmask() const
+        {
+            static constexpr std::uint8_t weights[16] = {
+                1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+
+            const auto weighted = vandq_u8(v, vld1q_u8(weights));
+            const auto low = vaddv_u8(vget_low_u8(weighted));
+            const auto high = vaddv_u8(vget_high_u8(weighted));
+            return static_cast<std::uint32_t>(low)
+                   | (static_cast<std::uint32_t>(high) << 8);
+        }
+
+        uint8x16_t v;
+        static constexpr int lanes = 16;
+    };
+
     // Four unsigned 32-bit lanes (128-bit).
     struct U32
     {

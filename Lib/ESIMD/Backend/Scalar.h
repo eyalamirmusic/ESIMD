@@ -10,6 +10,36 @@ namespace esimd::backend
 
 struct Scalar
 {
+    // A natural-width vector of byte lanes (one lane here). The comparisons
+    // yield 0xFF for true and 0x00 for false, the way the SIMD backends do.
+    struct U8
+    {
+        U8 operator&(U8 o) const { return {static_cast<std::uint8_t>(v & o.v)}; }
+        U8 operator|(U8 o) const { return {static_cast<std::uint8_t>(v | o.v)}; }
+        U8 operator~() const { return {static_cast<std::uint8_t>(~v)}; }
+
+        U8 equals(U8 o) const
+        {
+            return {static_cast<std::uint8_t>(v == o.v ? 0xFF : 0x00)};
+        }
+
+        // Unsigned this < o.
+        U8 lessThan(U8 o) const
+        {
+            return {static_cast<std::uint8_t>(v < o.v ? 0xFF : 0x00)};
+        }
+
+        static U8 broadcast(std::uint8_t x) { return {x}; }
+        static U8 load(const std::uint8_t* p) { return {*p}; }
+
+        // One bit per lane, set where the lane is all-ones. The lanes must be
+        // comparison results (all-ones or all-zeros).
+        std::uint32_t bitmask() const { return v >> 7; }
+
+        std::uint8_t v;
+        static constexpr int lanes = 1;
+    };
+
     // A natural-width vector of unsigned 32-bit lanes (one lane here).
     struct U32
     {

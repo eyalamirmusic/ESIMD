@@ -12,6 +12,7 @@
 
 #include "../Backend/Avx2.h"
 #include "../Backends.h"
+#include "../Kernels/FindByte.h"
 #include "../Kernels/SwapRedBlue.h"
 
 namespace esimd::backends
@@ -23,6 +24,30 @@ __attribute__((target("avx2,fma")))
 void swapRedBlue_avx2(const std::uint8_t* in, std::uint8_t* out, int pixelCount)
 {
     kernels::swapRedBlueImpl<backend::Avx2>(in, out, pixelCount);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+int findFirst_avx2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Avx2, false>(data, count, cls);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+int findFirstNot_avx2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Avx2, true>(data, count, cls);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+int countOf_avx2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::countOfImpl<backend::Avx2>(data, count, cls);
 }
 
 } // namespace esimd::backends

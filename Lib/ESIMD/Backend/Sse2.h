@@ -13,6 +13,45 @@ namespace esimd::backend
 
 struct Sse2
 {
+    // Sixteen byte lanes (128-bit). Comparisons yield all-ones / all-zeros.
+    struct U8
+    {
+        U8 operator&(U8 o) const { return {_mm_and_si128(v, o.v)}; }
+        U8 operator|(U8 o) const { return {_mm_or_si128(v, o.v)}; }
+        U8 operator~() const { return {_mm_xor_si128(v, _mm_set1_epi32(-1))}; }
+
+        U8 equals(U8 o) const { return {_mm_cmpeq_epi8(v, o.v)}; }
+
+        // Unsigned this < o. SSE2 only compares bytes as signed, so flip the
+        // sign bit of both sides first: that maps unsigned order onto signed.
+        U8 lessThan(U8 o) const
+        {
+            const auto flip = _mm_set1_epi8(static_cast<char>(0x80));
+            return {
+                _mm_cmplt_epi8(_mm_xor_si128(v, flip), _mm_xor_si128(o.v, flip))};
+        }
+
+        static U8 broadcast(std::uint8_t x)
+        {
+            return {_mm_set1_epi8(static_cast<char>(x))};
+        }
+
+        static U8 load(const std::uint8_t* p)
+        {
+            return {_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))};
+        }
+
+        // One bit per lane, set where the lane is all-ones. The lanes must be
+        // comparison results (all-ones or all-zeros).
+        std::uint32_t bitmask() const
+        {
+            return static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+        }
+
+        __m128i v;
+        static constexpr int lanes = 16;
+    };
+
     // Four unsigned 32-bit lanes (128-bit).
     struct U32
     {

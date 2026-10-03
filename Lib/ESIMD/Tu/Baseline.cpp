@@ -1,4 +1,5 @@
 #include "../Backends.h"
+#include "../Kernels/FindByte.h"
 #include "../Kernels/ResizeBilinear.h"
 #include "../Kernels/SwapRedBlue.h"
 #include "../Kernels/WarpAffine.h"
@@ -42,6 +43,21 @@ void warpAffineInverse_sse2(const std::uint8_t* src,
         src, srcWidth, srcHeight, inverse2x3, dst, dstWidth, dstHeight);
 }
 
+int findFirst_sse2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Sse2, false>(data, count, cls);
+}
+
+int findFirstNot_sse2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Sse2, true>(data, count, cls);
+}
+
+int countOf_sse2(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::countOfImpl<backend::Sse2>(data, count, cls);
+}
+
 } // namespace esimd::backends
 
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -77,6 +93,21 @@ void warpAffineInverse_neon(const std::uint8_t* src,
 {
     kernels::warpAffineInverseImpl<backend::Neon>(
         src, srcWidth, srcHeight, inverse2x3, dst, dstWidth, dstHeight);
+}
+
+int findFirst_neon(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Neon, false>(data, count, cls);
+}
+
+int findFirstNot_neon(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::findFirstImpl<backend::Neon, true>(data, count, cls);
+}
+
+int countOf_neon(const std::uint8_t* data, int count, const ByteClass& cls)
+{
+    return kernels::countOfImpl<backend::Neon>(data, count, cls);
 }
 
 } // namespace esimd::backends

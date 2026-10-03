@@ -16,6 +16,14 @@ It has two halves:
   optimization in every configuration, with FMA contraction and fast-math off,
   so a Debug build of your app still runs the kernels at speed and gets the
   same bits as a Release one.
+- **Byte scanning** (`ESIMD/ESIMD.h`, `ESIMD/ByteClass.h`). `findFirst`,
+  `findFirstNot` and `countOf` test sixteen or thirty-two bytes per step against
+  a `ByteClass` — a set of bytes spelled the way a parser thinks about it:
+  `anyOf('"', '\\') | below(0x20)` is "a quote, a backslash or a control
+  character". They are the inner loops of a text parser: run to the end of a
+  plain string, skip whitespace, count the newlines before an error position.
+  Same runtime dispatch as the image kernels (SSE2 / AVX2 / NEON / scalar), and
+  exact on every one of them.
 - **A register-level vector type** (`ESIMD/Vector.h`). `esimd::F32` and friends
   wrap one register of whatever width the translation unit is compiled for.
   It is header-only on purpose: it compiles at *your* settings, so a kernel
@@ -23,7 +31,26 @@ It has two halves:
 
 `ESIMD/Ops.h` adds buffer-level conveniences over the array primitives for
 anything with `data()` and `size()` — `std::vector`, `std::span`, a fixed array —
-so a call site reads `esimd::multiply(buffer, gain)`.
+so a call site reads `esimd::multiply(buffer, gain)`. The byte scans get the
+same treatment for any buffer of `char`, `unsigned char`, `signed char`,
+`std::byte` or `char8_t` — `std::string`, `std::string_view`, `EA::Vector`, a
+`Span` — plus `contains` and `allOf`, and a start offset for the finds:
+
+```cpp
+#include <ESIMD/Ops.h>
+
+static constexpr auto stringSpecial = esimd::anyOf('"', '\\') | esimd::below(0x20);
+static constexpr auto whitespace = esimd::anyOf(' ', '\t', '\n', '\r');
+
+auto pos = esimd::findFirstNot(text, whitespace, pos);   // skip whitespace
+auto end = esimd::findFirst(text, stringSpecial, pos);   // end of the plain run
+auto line = 1 + esimd::countOf(std::string_view {text}.substr(0, pos), '\n');
+if (esimd::allOf(text, esimd::below(0x80))) ...          // pure ASCII?
+```
+
+A `ByteClass` holds up to eight individual bytes and two inclusive ranges
+(`inRange('0', '9')`, `below(x)`, `above(x)`), unioned with `|`. Positions are
+`int` indices into the buffer; a find that matches nothing returns the size.
 
 ## Using it
 
@@ -61,6 +88,9 @@ To work against a local checkout while developing both sides, pass
 
 ## Determinism
 
+The byte scans are integer and exact by construction: every backend answers
+the same index or count, which the tests hold them to lane by lane.
+
 The elementwise primitives and the image kernels are bit-identical at every
 vector width and on every build: the library is compiled with FP contraction
 off and no fast-math, and the SIMD main loop hands the remainder to the scalar
@@ -79,11 +109,12 @@ runs on the SSE2 baseline.
 ```
 Lib/ESIMD/
   ESIMD.h       The public array-at-a-time API
+  ByteClass.h   The byte-set descriptor the scans take
   Ops.h         Buffer-level helpers over it
   Vector.h      The register-level vector type
   Backends.h    Per-backend entry points (internal; the tests and bench use it)
-  Backend/      Scalar, SSE2, AVX2 and NEON lane types
-  Kernels/      The image kernels, written once over a backend
+  Backend/      Scalar, SSE2, AVX2 and NEON lane types (U32, F4 and U8)
+  Kernels/      The image kernels and the byte scans, written once over a backend
   Dispatch/     CPU feature detection and the runtime selection
   Tu/           One translation unit per ISA
 Tests/

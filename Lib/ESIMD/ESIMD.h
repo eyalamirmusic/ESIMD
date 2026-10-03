@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteClass.h"
+
 #include <cstdint>
 
 // ESIMD: a small, self-contained portable SIMD layer.
@@ -106,5 +108,25 @@ double sumOfSquares(const float* a, int count);
 // Returns max(|a[i]|), 0.f when count == 0. Max is order-independent, so this
 // one matches a sequential loop exactly.
 float peakAbs(const float* a, int count);
+
+// --- Byte scanning ---
+//
+// A ByteClass (ByteClass.h) names a set of bytes: anyOf('"', '\\') | below(0x20)
+// is "a quote, a backslash or a control character". The scans below test
+// sixteen or thirty-two bytes per step against it. They are what a text parser
+// spends most of its time doing: run to the end of a plain string, skip
+// whitespace, count the newlines before an error position. All three are exact
+// and deterministic on every backend.
+
+// Index of the first byte in [data, data + count) that is in `cls`, or `count`
+// when there is none.
+int findFirst(const std::uint8_t* data, int count, const ByteClass& cls);
+
+// Index of the first byte in [data, data + count) that is NOT in `cls`, or
+// `count` when every byte is.
+int findFirstNot(const std::uint8_t* data, int count, const ByteClass& cls);
+
+// How many bytes in [data, data + count) are in `cls`.
+int countOf(const std::uint8_t* data, int count, const ByteClass& cls);
 
 } // namespace esimd

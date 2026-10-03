@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 // Micro-benchmark comparing the scalar reference against the active SIMD backend
 // for the ESIMD kernels, plus the float-array primitives (auto-vectorized vs
@@ -182,6 +183,19 @@ WarpFn baselineWarp()
 #endif
 }
 
+using ScanFn = int (*)(const std::uint8_t*, int, const esimd::ByteClass&);
+
+ScanFn baselineFindFirst()
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    return &esimd::backends::findFirst_sse2;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return &esimd::backends::findFirst_neon;
+#else
+    return &esimd::backends::findFirst_scalar;
+#endif
+}
+
 struct ResizeConfig
 {
     int srcW, srcH, dstW, dstH;
@@ -348,6 +362,53 @@ void benchArrayOps(int count)
         [&]
         { esimd::multiplyAdd(a.data(), b.data(), c.data(), out.data(), count); });
 }
+
+// A text scan: a buffer of plain string bytes with the one special byte at the
+// very end, so every backend walks the whole thing. The input is left alone
+// (perturbing it would plant an early hit); the result is what the sink
+// observes instead.
+void benchFindFirst(int count)
+{
+    static constexpr auto stringSpecial =
+        esimd::anyOf('"', '\\') | esimd::below(0x20);
+
+    auto text = Pixels(count);
+    for (int i = 0; i < count; ++i)
+        text[i] = 'a';
+    text[count - 1] = '"';
+    std::uint8_t scratch[1] = {0};
+    std::uint8_t result[4] = {0, 0, 0, 0};
+    const int iters = std::max(20, 400'000'000 / count);
+
+    const auto run = [&](auto fn)
+    {
+        return [&, fn]
+        {
+            const auto index = fn(text.data(), count, stringSpecial);
+            std::memcpy(result, &index, sizeof(int));
+        };
+    };
+
+    const auto scalarMs =
+        timeMs(iters, scratch, 1, result, run(&esimd::backends::findFirst_scalar));
+    const auto simdMs = timeMs(iters, scratch, 1, result, run(baselineFindFirst()));
+
+    std::printf("  %9d bytes | scalar %8.3f ms %7.1f MB/s",
+                count,
+                scalarMs,
+                perSec(count, scalarMs));
+    report(baselineName(), count, simdMs, scalarMs, "MB/s");
+
+#if defined(ESIMD_HAS_AVX2)
+    if (esimd::cpu::hasAvx2Fma())
+    {
+        const auto avx2Ms =
+            timeMs(iters, scratch, 1, result, run(&esimd::backends::findFirst_avx2));
+        report("avx2", count, avx2Ms, scalarMs, "MB/s");
+    }
+#endif
+    std::printf("\n");
+}
 } // namespace
 
 int main()
@@ -380,6 +441,10 @@ int main()
     std::printf("\nswapRedBlue:\n");
     for (long long pixels: {1'000'000LL, 8'000'000LL})
         benchSwap(pixels);
+
+    std::printf("\nfindFirst (quote, backslash or control char at the end):\n");
+    for (int count: {64, 4096, 1'000'000})
+        benchFindFirst(count);
 
     std::printf("\narray primitives (non-vectorized scalar vs %s):\n",
                 baselineName());
