@@ -73,7 +73,6 @@ build but not run it, so the AVX2 path is first exercised by CI's x64 lanes.
   (`SKIP_UNITY_BUILD_INCLUSION`), since its ISA flag must reach no other file.
   Off by default because a unity build collapses the per-file entries in
   `compile_commands.json` that LSP tooling reads; Claude keeps it off.
-  `EACP_CI_BUILD` in an enclosing eacp build forces it on.
 - `ESIMD_BUILD_TESTS` (default `OFF`, on when top-level): builds `ESIMDTests`
   and `ESIMDBench`, which fetch NanoTest and ea_data_structures via CPM
   (`CMake/FindNanoTest.cmake`, `CMake/FindEADataStructures.cmake`). The

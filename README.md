@@ -83,7 +83,7 @@ To work against a local checkout while developing both sides, pass
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `ESIMD_UNITY_BUILD` | `OFF` | Compile the library as a CMake unity build. The AVX2 translation unit is always excluded from the blob. An enclosing eacp build with `EACP_CI_BUILD` on forces it on. |
+| `ESIMD_UNITY_BUILD` | `OFF` | Compile the library as a CMake unity build. The AVX2 translation unit is always excluded from the blob. |
 | `ESIMD_BUILD_TESTS` | `OFF` (`ON` when top-level) | Build the test suite and the benchmark. They fetch NanoTest and ea_data_structures through CPM; the library itself fetches nothing. |
 
 ## Determinism
