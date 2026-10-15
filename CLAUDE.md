@@ -39,8 +39,10 @@ ctest --test-dir build --output-on-failure
 # Scalar reference against the active backend
 ./build/Tests/ESIMDBench
 
-# What CI runs on every lane: Debug plus the unity build
-cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DESIMD_UNITY_BUILD=ON
+# What CI runs on every desktop lane: Debug, the unity build and ccache
+# (Windows adds -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded)
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DESIMD_UNITY_BUILD=ON \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 # A universal build has no AVX2 translation unit (see below)
 cmake -G Ninja -B build-universal -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
@@ -53,8 +55,16 @@ Debug is the configuration that matters: the library forces its own
 optimization level in every configuration, and a Debug lane is where that has
 to hold. CI (`.github/workflows/ci.yml`) builds and tests macOS universal and
 arm64, Linux GCC and Clang, and Windows x64 and ARM64 on MSVC and clang-cl.
-An Apple Silicon Mac without Rosetta can compile an x86_64 build but not run
-it, so the AVX2 path is first exercised by CI's x64 lanes.
+Every one of those lanes compiles through ccache in depend mode
+(`CCACHE_DEPEND=1`), and the Windows lanes embed debug info in each object
+(`/Z7`), since the shared PDB of `/Zi` is something no per-object cache can
+restore. The benchmark is built there but never run on CI. Two more lanes
+build only, with no ccache: the iOS simulator (Xcode generator, code signing
+off) and Android arm64-v8a (the NDK installed with sdkmanager, its
+`android.toolchain.cmake` at API 33). The tests compile on both and nothing
+runs them; NanoTest registers a cross-compiled test executable without running
+it for discovery. An Apple Silicon Mac without Rosetta can compile an x86_64
+build but not run it, so the AVX2 path is first exercised by CI's x64 lanes.
 
 ### Options
 
@@ -63,6 +73,7 @@ it, so the AVX2 path is first exercised by CI's x64 lanes.
   (`SKIP_UNITY_BUILD_INCLUSION`), since its ISA flag must reach no other file.
   Off by default because a unity build collapses the per-file entries in
   `compile_commands.json` that LSP tooling reads; Claude keeps it off.
+  `EACP_CI_BUILD` in an enclosing eacp build forces it on.
 - `ESIMD_BUILD_TESTS` (default `OFF`, on when top-level): builds `ESIMDTests`
   and `ESIMDBench`, which fetch NanoTest and ea_data_structures via CPM
   (`CMake/FindNanoTest.cmake`, `CMake/FindEADataStructures.cmake`). The
