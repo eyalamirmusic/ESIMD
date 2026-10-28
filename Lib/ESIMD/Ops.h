@@ -88,6 +88,55 @@ void lerp(Dst& dst, const Target& target, float t)
     lerp(dst.data(), target.data(), t, dst.data(), commonCount(dst, target));
 }
 
+// dst[i] = e^dst[i]
+template <MutableFloatBuffer Dst>
+void exp(Dst& dst)
+{
+    exp(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = 2^dst[i]
+template <MutableFloatBuffer Dst>
+void exp2(Dst& dst)
+{
+    exp2(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = ln(dst[i])
+template <MutableFloatBuffer Dst>
+void log(Dst& dst)
+{
+    log(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = log2(dst[i])
+template <MutableFloatBuffer Dst>
+void log2(Dst& dst)
+{
+    log2(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = sin(dst[i])
+template <MutableFloatBuffer Dst>
+void sin(Dst& dst)
+{
+    sin(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = cos(dst[i])
+template <MutableFloatBuffer Dst>
+void cos(Dst& dst)
+{
+    cos(dst.data(), dst.data(), (int) dst.size());
+}
+
+// dst[i] = tanh(dst[i])
+template <MutableFloatBuffer Dst>
+void tanh(Dst& dst)
+{
+    tanh(dst.data(), dst.data(), (int) dst.size());
+}
+
 // sum(src[i]^2)
 template <FloatBuffer Src>
 double sumOfSquares(const Src& src)

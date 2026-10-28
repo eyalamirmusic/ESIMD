@@ -94,6 +94,54 @@ void multiplyAdd(const float* a, float b, const float* c, float* out, int count)
 // out[i] = a[i] + t * (b[i] - a[i])
 void lerp(const float* a, const float* b, float t, float* out, int count);
 
+// --- Elementwise math functions ---
+//
+// Each processes `count` floats; `out` may alias `a`. SIMD-accelerated (AVX2,
+// SSE2, NEON) and deterministic: every backend, vector width and build gives
+// bit-identical results, on every architecture. They are built only from
+// exactly rounded operations -- no FMA, no hardware estimates -- so they are
+// not correctly rounded, but the error against the exact result, measured over
+// every float input, is at most:
+//
+//   exp 1.0 ULP, exp2 1.25, log 1.0, log2 1.5, sin 1.3, cos 1.3, tanh 1.35
+//
+// sin and cos hold that bound for |x| <= 65536 (2^16). Beyond it the error
+// grows with |x| (about |x| * 2^-24 absolute) but results stay within [-1, 1];
+// beyond 2^22, where adjacent floats are half a radian apart, the argument is
+// not reduced at all and sin returns 0, cos returns 1.
+//
+// Special values: a NaN input is returned unchanged. exp(+inf) = +inf,
+// exp(-inf) = 0, and exp/exp2 overflow to +inf; results that would be below
+// FLT_MIN (x < ~-87.34 for exp, x < -126 for exp2) are flushed to +0 instead
+// of returned as subnormals. exp2 of an integer, and log2 of a power of two,
+// are exact. log(1) = 0, log(+-0) = -inf, log(+inf) = +inf, log of a negative
+// number is NaN; subnormal inputs are handled. sin(+-0) = +-0, cos(0) = 1,
+// sin and cos of +-inf are NaN. tanh(+-0) = +-0 and tanh saturates to exactly
+// +-1 (at |x| >= ~9, so tanh(+-inf) = +-1). Results assume the default
+// floating-point environment: a caller that turns on flush-to-zero sees
+// subnormal inputs treated as zero.
+
+// out[i] = e^a[i]
+void exp(const float* a, float* out, int count);
+
+// out[i] = 2^a[i]
+void exp2(const float* a, float* out, int count);
+
+// out[i] = ln(a[i])
+void log(const float* a, float* out, int count);
+
+// out[i] = log2(a[i])
+void log2(const float* a, float* out, int count);
+
+// out[i] = sin(a[i])
+void sin(const float* a, float* out, int count);
+
+// out[i] = cos(a[i])
+void cos(const float* a, float* out, int count);
+
+// out[i] = tanh(a[i])
+void tanh(const float* a, float* out, int count);
+
 // --- Float-array reductions ---
 //
 // Unlike the elementwise primitives, a reduction has an accumulation order.

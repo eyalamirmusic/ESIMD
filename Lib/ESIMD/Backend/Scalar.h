@@ -2,6 +2,9 @@
 
 #include "../Common.h"
 
+#include <bit>
+#include <limits>
+
 // The Scalar backend is the reference implementation of the primitive set:
 // SIMD backends mirror it lane-for-lane, the swap kernel's width-remainder tail
 // runs through it, and it is the oracle SIMD kernels are validated against.
@@ -110,6 +113,91 @@ struct Scalar
         }
 
         float v[4];
+    };
+
+    // A natural-width vector of signed 32-bit lanes (one lane here): the
+    // integer companion of F32, for exponent fields and comparison masks. The
+    // arithmetic wraps the way the SIMD lanes do, and shr is arithmetic.
+    struct I32
+    {
+        I32 operator+(I32 o) const { return {wrap(raw(v) + raw(o.v))}; }
+        I32 operator-(I32 o) const { return {wrap(raw(v) - raw(o.v))}; }
+        I32 operator&(I32 o) const { return {v & o.v}; }
+        I32 operator|(I32 o) const { return {v | o.v}; }
+        I32 operator^(I32 o) const { return {v ^ o.v}; }
+
+        template <int N>
+        I32 shl() const
+        {
+            return {wrap(raw(v) << N)};
+        }
+
+        template <int N>
+        I32 shr() const
+        {
+            return {v >> N};
+        }
+
+        static I32 broadcast(std::int32_t x) { return {x}; }
+
+        static std::uint32_t raw(std::int32_t x)
+        {
+            return static_cast<std::uint32_t>(x);
+        }
+
+        static std::int32_t wrap(std::uint32_t x)
+        {
+            return static_cast<std::int32_t>(x);
+        }
+
+        std::int32_t v;
+        static constexpr int lanes = 1;
+    };
+
+    // A natural-width vector of float lanes (one lane here). Comparisons are
+    // ordered (false when either side is NaN) and yield an I32 mask of
+    // all-ones or all-zeros, the way the SIMD backends do.
+    struct F32
+    {
+        F32 operator+(F32 o) const { return {v + o.v}; }
+        F32 operator-(F32 o) const { return {v - o.v}; }
+        F32 operator*(F32 o) const { return {v * o.v}; }
+        F32 operator/(F32 o) const { return {v / o.v}; }
+
+        I32 lessThan(F32 o) const { return mask(v < o.v); }
+        I32 lessEqual(F32 o) const { return mask(v <= o.v); }
+        I32 equals(F32 o) const { return mask(v == o.v); }
+        I32 isNaN() const { return mask(v != v); }
+
+        I32 bits() const { return {std::bit_cast<std::int32_t>(v)}; }
+
+        // Round toward zero. Out of range or NaN gives INT32_MIN, as cvttps
+        // does; the kernels only convert values already known to be in range.
+        I32 truncate() const
+        {
+            if (!(std::fabs(v) < 2147483648.f))
+                return {std::numeric_limits<std::int32_t>::min()};
+            return {static_cast<std::int32_t>(v)};
+        }
+
+        static F32 fromBits(I32 a) { return {std::bit_cast<float>(a.v)}; }
+        static F32 fromInt(I32 a) { return {static_cast<float>(a.v)}; }
+
+        // Bitwise, like the SIMD blends: `mask` must be all-ones or all-zeros.
+        static F32 select(I32 mask, F32 ifTrue, F32 ifFalse)
+        {
+            return fromBits((mask & ifTrue.bits())
+                            | (I32 {~mask.v} & ifFalse.bits()));
+        }
+
+        static F32 broadcast(float x) { return {x}; }
+        static F32 load(const float* p) { return {*p}; }
+        static void store(float* p, F32 a) { *p = a.v; }
+
+        static I32 mask(bool condition) { return {condition ? -1 : 0}; }
+
+        float v;
+        static constexpr int lanes = 1;
     };
 };
 

@@ -24,6 +24,9 @@ It has two halves:
   plain string, skip whitespace, count the newlines before an error position.
   Same runtime dispatch as the image kernels (SSE2 / AVX2 / NEON / scalar), and
   exact on every one of them.
+- **Math functions** (`ESIMD/ESIMD.h`). `exp`, `exp2`, `log`, `log2`, `sin`,
+  `cos` and `tanh` over float arrays, with the same runtime dispatch, and
+  bit-identical on every backend and architecture (see below).
 - **A register-level vector type** (`ESIMD/Vector.h`). `esimd::F32` and friends
   wrap one register of whatever width the translation unit is compiled for.
   It is header-only on purpose: it compiles at *your* settings, so a kernel
@@ -51,6 +54,33 @@ if (esimd::allOf(text, esimd::below(0x80))) ...          // pure ASCII?
 A `ByteClass` holds up to eight individual bytes and two inclusive ranges
 (`inRange('0', '9')`, `below(x)`, `above(x)`), unioned with `|`. Positions are
 `int` indices into the buffer; a find that matches nothing returns the size.
+
+## Math functions
+
+```cpp
+esimd::exp(in.data(), out.data(), count);  // out may equal in
+esimd::tanh(buffer);                        // Ops.h: in place on any float buffer
+```
+
+Each of `exp`, `exp2`, `log`, `log2`, `sin`, `cos` and `tanh` maps `count`
+floats to `count` floats. They are not correctly rounded, but every backend
+returns the same bits for the same input, so a result never depends on the
+machine, the vector width or the build. The worst-case error against the exact
+value, measured over every float input:
+
+| Function | Max error | Notes |
+| --- | --- | --- |
+| `exp` | 1.0 ULP | +inf above ~88.72; results below `FLT_MIN` (x < ~-87.34) flush to +0 |
+| `exp2` | 1.25 ULP | exact for integer x; +inf from 128; flush to +0 below -126 |
+| `log` | 1.0 ULP | `log(1) = 0`, `log(±0) = -inf`, negative gives NaN; subnormal inputs handled |
+| `log2` | 1.5 ULP | exact for powers of two, subnormal ones included |
+| `sin`, `cos` | 1.3 ULP | for \|x\| ≤ 65536; `sin(±0) = ±0`, `cos(0) = 1`, ±inf gives NaN |
+| `tanh` | 1.35 ULP | `tanh(±0) = ±0`; exactly ±1 from \|x\| ≈ 9.01, so `tanh(±inf) = ±1` |
+
+Past |x| = 65536 the error of `sin` and `cos` grows with |x| (about
+|x| · 2^-24 absolute) while staying within [-1, 1]; past 2^22, where
+neighbouring floats are half a radian apart, the argument is not reduced and
+they return 0 and 1. A NaN input comes back unchanged, payload included.
 
 ## Using it
 
@@ -98,6 +128,14 @@ backend. The reductions use a fixed four-lane interleave, so they are
 deterministic across builds and architectures too, but not bit-equal to a
 naive sequential loop.
 
+The math functions are written once over a backend from exactly rounded
+operations only — no FMA, no hardware reciprocal or square-root estimates, no
+min/max, whose NaN rules differ between x86 and ARM — so they are bit-identical
+on every backend and architecture as well. Where an intermediate underflows,
+the result is the same whether or not the CPU flushes subnormals to zero; only
+a subnormal *input*, under a flush-to-zero mode the caller turned on, is seen
+as zero.
+
 AVX2 is a separately compiled translation unit chosen at runtime, and the
 library opts itself out of LTO so the optimizer can never hoist AVX2 code into
 a baseline caller. An Apple universal (`arm64;x86_64`) build has no AVX2 unit,
@@ -113,8 +151,9 @@ Lib/ESIMD/
   Ops.h         Buffer-level helpers over it
   Vector.h      The register-level vector type
   Backends.h    Per-backend entry points (internal; the tests and bench use it)
-  Backend/      Scalar, SSE2, AVX2 and NEON lane types (U32, F4 and U8)
-  Kernels/      The image kernels and the byte scans, written once over a backend
+  Backend/      Scalar, SSE2, AVX2 and NEON lane types (U8, U32, F4, F32, I32)
+  Kernels/      The image kernels, the byte scans and the math functions,
+                written once over a backend
   Dispatch/     CPU feature detection and the runtime selection
   Tu/           One translation unit per ISA
 Tests/

@@ -1,7 +1,7 @@
 #include "../Backends.h"
 #include "../ESIMD.h"
 
-// Public image-kernel entry points. Each resolves the best available backend
+// Public entry points of the dispatched kernels. Each resolves the best available backend
 // once (CPUID on x86-64, fixed on every other architecture) and calls it through
 // a function pointer -- a deliberate, non-inlinable boundary between baseline and
 // AVX2 code. (The float-array primitives live in Tu/ArrayOps.cpp; being
@@ -99,6 +99,67 @@ const ScanBackend& scanBackend() noexcept
     return backend;
 }
 
+using MathFn = void (*)(const float*, float*, int);
+
+// The math functions share one selection too: a polynomial per element is
+// compute-bound, so the 8-lane AVX2 path is worth its dispatch (unlike the
+// memory-bound float-array primitives).
+struct MathBackend
+{
+    MathFn exp;
+    MathFn exp2;
+    MathFn log;
+    MathFn log2;
+    MathFn sin;
+    MathFn cos;
+    MathFn tanh;
+};
+
+MathBackend pickMathBackend() noexcept
+{
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(ESIMD_HAS_AVX2)
+    if (cpu::hasAvx2Fma())
+        return {&backends::exp_avx2,
+                &backends::exp2_avx2,
+                &backends::log_avx2,
+                &backends::log2_avx2,
+                &backends::sin_avx2,
+                &backends::cos_avx2,
+                &backends::tanh_avx2};
+#endif
+    return {&backends::exp_sse2,
+            &backends::exp2_sse2,
+            &backends::log_sse2,
+            &backends::log2_sse2,
+            &backends::sin_sse2,
+            &backends::cos_sse2,
+            &backends::tanh_sse2};
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return {&backends::exp_neon,
+            &backends::exp2_neon,
+            &backends::log_neon,
+            &backends::log2_neon,
+            &backends::sin_neon,
+            &backends::cos_neon,
+            &backends::tanh_neon};
+#else
+    return {&backends::exp_scalar,
+            &backends::exp2_scalar,
+            &backends::log_scalar,
+            &backends::log2_scalar,
+            &backends::sin_scalar,
+            &backends::cos_scalar,
+            &backends::tanh_scalar};
+#endif
+}
+
+const MathBackend& mathBackend() noexcept
+{
+    static const MathBackend backend = pickMathBackend();
+    return backend;
+}
+
 } // namespace
 
 void swapRedBlue(const std::uint8_t* in, std::uint8_t* out, int pixelCount)
@@ -170,6 +231,41 @@ int findFirstNot(const std::uint8_t* data, int count, const ByteClass& cls)
 int countOf(const std::uint8_t* data, int count, const ByteClass& cls)
 {
     return scanBackend().countOf(data, count, cls);
+}
+
+void exp(const float* a, float* out, int count)
+{
+    mathBackend().exp(a, out, count);
+}
+
+void exp2(const float* a, float* out, int count)
+{
+    mathBackend().exp2(a, out, count);
+}
+
+void log(const float* a, float* out, int count)
+{
+    mathBackend().log(a, out, count);
+}
+
+void log2(const float* a, float* out, int count)
+{
+    mathBackend().log2(a, out, count);
+}
+
+void sin(const float* a, float* out, int count)
+{
+    mathBackend().sin(a, out, count);
+}
+
+void cos(const float* a, float* out, int count)
+{
+    mathBackend().cos(a, out, count);
+}
+
+void tanh(const float* a, float* out, int count)
+{
+    mathBackend().tanh(a, out, count);
 }
 
 } // namespace esimd

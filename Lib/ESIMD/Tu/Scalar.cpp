@@ -1,6 +1,7 @@
 #include "../Backend/Scalar.h"
 #include "../Backends.h"
 #include "../Kernels/FindByte.h"
+#include "../Kernels/Math.h"
 #include "../Kernels/ResizeBilinear.h"
 #include "../Kernels/SwapRedBlue.h"
 #include "../Kernels/WarpAffine.h"
@@ -51,6 +52,41 @@ int findFirstNot_scalar(const std::uint8_t* data, int count, const ByteClass& cl
 int countOf_scalar(const std::uint8_t* data, int count, const ByteClass& cls)
 {
     return kernels::countOfImpl<backend::Scalar>(data, count, cls);
+}
+
+void exp_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Exp, backend::Scalar>(a, out, count);
+}
+
+void exp2_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Exp2, backend::Scalar>(a, out, count);
+}
+
+void log_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Log, backend::Scalar>(a, out, count);
+}
+
+void log2_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Log2, backend::Scalar>(a, out, count);
+}
+
+void sin_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Sin, backend::Scalar>(a, out, count);
+}
+
+void cos_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Cos, backend::Scalar>(a, out, count);
+}
+
+void tanh_scalar(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Tanh, backend::Scalar>(a, out, count);
 }
 
 } // namespace esimd::backends
