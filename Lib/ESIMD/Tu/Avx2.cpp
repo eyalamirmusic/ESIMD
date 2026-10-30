@@ -13,6 +13,7 @@
 #include "../Backend/Avx2.h"
 #include "../Backends.h"
 #include "../Kernels/FindByte.h"
+#include "../Kernels/Math.h"
 #include "../Kernels/SwapRedBlue.h"
 
 namespace esimd::backends
@@ -48,6 +49,62 @@ __attribute__((target("avx2,fma")))
 int countOf_avx2(const std::uint8_t* data, int count, const ByteClass& cls)
 {
     return kernels::countOfImpl<backend::Avx2>(data, count, cls);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void exp_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Exp, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void exp2_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Exp2, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void log_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Log, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void log2_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Log2, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void sin_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Sin, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void cos_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Cos, backend::Avx2>(a, out, count);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,fma")))
+#endif
+void tanh_avx2(const float* a, float* out, int count)
+{
+    kernels::mapImpl<kernels::Tanh, backend::Avx2>(a, out, count);
 }
 
 } // namespace esimd::backends

@@ -106,12 +106,15 @@ The array half, bottom up:
 
 - `Common.h` — the shared standard-library includes.
 - `Backend/` — `Scalar`, `Sse2`, `Avx2` and `Neon`: each a struct of lane types
-  (`U32`, `F4`) with the same operation set. `Scalar` is the reference the
+  (`U8`, `U32`, `F4`, and `F32` with its integer companion `I32`) with the
+  same operation set. `Scalar` is the reference the
   SIMD backends mirror lane-for-lane and the oracle the tests validate against.
 - `Kernels/` — the image kernels (`SwapRedBlue`, `Bilinear`, `ResizeBilinear`,
   `WarpAffine`), each written once as a template over a backend `B`. The main
   loop processes `B::U32::lanes` pixels at a time and the remainder runs through
   `Scalar`, which is what keeps every backend bit-identical to the oracle.
+  `FindByte.h` holds the byte scans and `Math.h` the elementwise math
+  functions (`exp`, `exp2`, `log`, `log2`, `sin`, `cos`, `tanh`) over `F32`.
 - `Tu/` — one translation unit per ISA, instantiating the kernels for its
   backend: `Scalar.cpp`, `Baseline.cpp` (SSE2 on x86-64, NEON on arm64, the
   ISA the whole target is compiled for) and `Avx2.cpp`, which alone is
@@ -165,6 +168,17 @@ use a fixed four-lane interleave so they are deterministic across builds and
 architectures, but not bit-equal to a naive sequential loop. Any change to a
 kernel must keep its test against the scalar oracle passing on every backend,
 and a new backend operation is added to `Scalar` first.
+
+The math functions are bit-identical across architectures too, which
+constrains `Math.h`: only exactly rounded lane operations (no FMA intrinsics,
+no reciprocal/rsqrt estimates, no min/max, whose NaN rules differ between SSE
+and NEON), float-to-int conversion only of values already integral and in
+range (`cvttps` and NEON disagree outside it), and every NaN returned is the
+input passed through a select or a constant, never one produced by
+arithmetic (x86 and ARM give it different sign bits). The test
+`ESIMD/mathOracleMatchesRecordedBits` pins the scalar oracle's output bits as
+recorded on arm64, so a deliberate change to a math kernel must update those
+hashes.
 
 ### Tests
 

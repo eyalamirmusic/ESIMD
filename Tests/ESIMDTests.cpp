@@ -6,6 +6,12 @@
 #include <ea_data_structures/Structures/Span.h>
 #include <ea_data_structures/ea_data_structures.h>
 
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstring>
+#include <initializer_list>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -756,4 +762,530 @@ auto tOpsByteHelpersAcceptStringsAndBuffers =
     const auto span = EA::Span<const std::uint8_t> {raw};
     check(findFirst(span, 0x42) == 3);
     check(findFirst(span.first(2), 0x42) == 2);
+};
+
+// --- Math functions ---
+
+namespace
+{
+using MathFn = void (*)(const float*, float*, int);
+using Floats = EA::Vector<float>;
+
+// One math function: the scalar oracle, every other backend the running CPU
+// can execute (the dispatched entry point last), the double-precision
+// reference and the ULP bound ESIMD.h documents.
+struct MathFunction
+{
+    const char* name;
+    MathFn scalar;
+    double (*reference)(double);
+    double ulpBound;
+    EA::Vector<MathFn> backends;
+};
+
+void addBackend(EA::Vector<MathFunction>& functions,
+                std::initializer_list<MathFn> perFunction)
+{
+    auto i = 0;
+    for (auto fn: perFunction)
+        functions[i++].backends.add(fn);
+}
+
+EA::Vector<MathFunction> mathFunctions()
+{
+    using namespace esimd::backends;
+
+    auto functions = EA::Vector<MathFunction> {};
+    functions.add({"exp", &exp_scalar, [](double x) { return std::exp(x); }, 1.0});
+    functions.add(
+        {"exp2", &exp2_scalar, [](double x) { return std::exp2(x); }, 1.25});
+    functions.add({"log", &log_scalar, [](double x) { return std::log(x); }, 1.0});
+    functions.add(
+        {"log2", &log2_scalar, [](double x) { return std::log2(x); }, 1.5});
+    functions.add({"sin", &sin_scalar, [](double x) { return std::sin(x); }, 1.3});
+    functions.add({"cos", &cos_scalar, [](double x) { return std::cos(x); }, 1.3});
+    functions.add(
+        {"tanh", &tanh_scalar, [](double x) { return std::tanh(x); }, 1.35});
+
+#if defined(__x86_64__) || defined(_M_X64)
+    addBackend(functions,
+               {&exp_sse2,
+                &exp2_sse2,
+                &log_sse2,
+                &log2_sse2,
+                &sin_sse2,
+                &cos_sse2,
+                &tanh_sse2});
+#if defined(ESIMD_HAS_AVX2)
+    if (esimd::cpu::hasAvx2Fma())
+        addBackend(functions,
+                   {&exp_avx2,
+                    &exp2_avx2,
+                    &log_avx2,
+                    &log2_avx2,
+                    &sin_avx2,
+                    &cos_avx2,
+                    &tanh_avx2});
+#endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    addBackend(functions,
+               {&exp_neon,
+                &exp2_neon,
+                &log_neon,
+                &log2_neon,
+                &sin_neon,
+                &cos_neon,
+                &tanh_neon});
+#endif
+
+    addBackend(functions,
+               {&esimd::exp,
+                &esimd::exp2,
+                &esimd::log,
+                &esimd::log2,
+                &esimd::sin,
+                &esimd::cos,
+                &esimd::tanh});
+    return functions;
+}
+
+// Integer-only generation, so the inputs are the same bits on every compiler,
+// flag set and architecture.
+struct BitSource
+{
+    std::uint32_t next()
+    {
+        state = state * 1664525u + 1013904223u;
+        return state;
+    }
+
+    std::uint32_t state;
+};
+
+// Half arbitrary bit patterns (NaNs with payloads, infinities, subnormals,
+// huge and tiny values), half finite values of magnitude 2^-16 to 2^16 where
+// every function does real work.
+Floats mathInputs(int count)
+{
+    auto bits = BitSource {12345u};
+    auto data = Floats(count);
+    for (int i = 0; i < count; ++i)
+    {
+        auto pattern = bits.next();
+        if (i % 2 == 1)
+            pattern = (pattern & 0x807FFFFFu) | ((111u + bits.next() % 32u) << 23);
+        data[i] = std::bit_cast<float>(pattern);
+    }
+    return data;
+}
+
+Floats run(MathFn fn, const Floats& in)
+{
+    auto out = Floats(in.size());
+    fn(in.data(), out.data(), in.size());
+    return out;
+}
+
+bool sameBits(const Floats& a, const Floats& b)
+{
+    return a.size() == b.size()
+           && std::memcmp(a.data(), b.data(), sizeof(float) * a.size()) == 0;
+}
+
+// Element counts straddling every lane width (4 and 8), the scalar tail and
+// a few longer runs.
+constexpr int kMathSizes[] = {
+    0, 1, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 1001};
+
+// The distance from `got` to the exact value in units of the float spacing at
+// the exact value (the subnormal spacing below FLT_MIN).
+double ulpError(float got, double exact)
+{
+    const auto magnitude = std::fabs(exact);
+    auto spacing = std::ldexp(1.0, -149);
+    if (magnitude >= std::ldexp(1.0, -126))
+    {
+        auto exponent = 0;
+        std::frexp(magnitude, &exponent);
+        spacing = std::ldexp(1.0, exponent - 24);
+    }
+    return std::fabs(static_cast<double>(got) - exact) / spacing;
+}
+
+void addGrid(Floats& data, double low, double high, int steps)
+{
+    for (int k = 0; k <= steps; ++k)
+        data.add(static_cast<float>(low + (high - low) * k / steps));
+}
+
+void addRandom(Floats& data, double low, double high, int count)
+{
+    auto bits = BitSource {777u};
+    for (int k = 0; k < count; ++k)
+        data.add(static_cast<float>(low + (high - low) * (bits.next() * 0x1p-32)));
+}
+
+// The floats nearest each of the first `count` multiples of pi/2, and two
+// neighbours either side: where sin or cos nearly cancels to zero.
+void addNearHalfPiMultiples(Floats& data, int count)
+{
+    for (int k = 1; k <= count; ++k)
+    {
+        auto x = static_cast<float>(k * 1.57079632679489661923);
+        for (int step = 0; step < 2; ++step)
+            x = std::nextafter(x, 0.f);
+        for (int step = 0; step < 5; ++step, x = std::nextafter(x, 1e9f))
+        {
+            data.add(x);
+            data.add(-x);
+        }
+    }
+}
+
+// Positive floats spread evenly over every binade, subnormals included.
+void addEveryBinade(Floats& data, int count)
+{
+    auto bits = BitSource {4242u};
+    for (int k = 0; k < count; ++k)
+        data.add(std::bit_cast<float>(bits.next() % 0x7F800000u));
+}
+
+// The sweep each function's accuracy is measured over: its useful range,
+// plus a dense grid of the places a polynomial or a reduction goes wrong.
+Floats accuracyInputs(std::string_view name)
+{
+    auto data = Floats {};
+    if (name == "exp")
+    {
+        addRandom(data, -87.3, 88.72, 100'000);
+        addGrid(data, -1e-3, 1e-3, 20'000);
+        addGrid(data, 88.0, 88.7228, 20'000);
+        addGrid(data, -87.33, -86.0, 20'000);
+    }
+    else if (name == "exp2")
+    {
+        addRandom(data, -126.0, 127.99, 100'000);
+        addGrid(data, -1e-3, 1e-3, 20'000);
+        addGrid(data, -3.0, 3.0, 60'000);
+        addGrid(data, 127.0, 127.999, 20'000);
+    }
+    else if (name == "log" || name == "log2")
+    {
+        addEveryBinade(data, 100'000);
+        addGrid(data, 0.99, 1.01, 40'000);
+        addGrid(data, 0.5, 2.0, 40'000);
+    }
+    else if (name == "sin" || name == "cos")
+    {
+        addRandom(data, -65536.0, 65536.0, 100'000);
+        addGrid(data, -10.0, 10.0, 40'000);
+        addGrid(data, -1e-3, 1e-3, 10'000);
+        addNearHalfPiMultiples(data, 41'000);
+    }
+    else if (name == "tanh")
+    {
+        addRandom(data, -12.0, 12.0, 100'000);
+        addGrid(data, -1e-3, 1e-3, 10'000);
+        addGrid(data, 0.6, 0.65, 20'000);
+        addGrid(data, -0.65, -0.6, 20'000);
+        addGrid(data, 8.0, 10.0, 20'000);
+    }
+    return data;
+}
+
+// exp and exp2 flush results below FLT_MIN to zero, as documented.
+bool flushedAsDocumented(float got, double exact)
+{
+    return got == 0.f && exact < std::ldexp(1.0, -126) * (1.0 + 0x1p-20);
+}
+
+double maxUlpError(const MathFunction& fn)
+{
+    const auto in = accuracyInputs(fn.name);
+    const auto out = run(fn.scalar, in);
+    auto worst = 0.0;
+    for (int i = 0; i < in.size(); ++i)
+    {
+        const auto exact = fn.reference(static_cast<double>(in[i]));
+        if (!flushedAsDocumented(out[i], exact))
+            worst = std::max(worst, ulpError(out[i], exact));
+    }
+    return worst;
+}
+
+// FNV-1a over the output bits.
+std::uint64_t hashOf(const Floats& values)
+{
+    auto hash = 14695981039346656037ull;
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(values.data());
+    for (std::size_t i = 0; i < sizeof(float) * values.size(); ++i)
+        hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}
+
+Floats filledFloats(int count, float value)
+{
+    auto data = Floats(count);
+    for (int i = 0; i < count; ++i)
+        data[i] = value;
+    return data;
+}
+
+struct SpecialCase
+{
+    float in;
+    float expected;
+};
+
+// Every lane of every backend gets the case: the value fills a buffer longer
+// than the widest vector, and the odd length sends some through the tail.
+void checkSpecialCases(const MathFunction& fn,
+                       std::initializer_list<SpecialCase> cases)
+{
+    auto all = EA::Vector<MathFn> {fn.scalar};
+    for (auto backend: fn.backends)
+        all.add(backend);
+
+    for (const auto& c: cases)
+    {
+        for (auto backend: all)
+            for (auto y: run(backend, filledFloats(19, c.in)))
+            {
+                if (std::isnan(c.expected))
+                    check(std::isnan(y));
+                else
+                    check(std::bit_cast<std::uint32_t>(y)
+                          == std::bit_cast<std::uint32_t>(c.expected));
+            }
+    }
+}
+
+const MathFunction& mathFunction(const EA::Vector<MathFunction>& functions,
+                                 std::string_view name)
+{
+    for (const auto& fn: functions)
+        if (name == fn.name)
+            return fn;
+    return functions[0];
+}
+
+constexpr auto kInf = std::numeric_limits<float>::infinity();
+constexpr auto kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr auto kMinNormal = std::numeric_limits<float>::min();
+
+void checkInPlaceHelper(void (*helper)(Floats&), MathFn raw)
+{
+    const auto in = mathInputs(1001);
+    auto buffer = in;
+    helper(buffer);
+    check(sameBits(buffer, run(raw, in)));
+}
+} // namespace
+
+auto tEveryMathBackendMatchesScalar =
+    test("ESIMD/everyMathBackendMatchesScalar") = []
+{
+    for (const auto& fn: mathFunctions())
+        for (auto size: kMathSizes)
+        {
+            const auto in = mathInputs(size);
+            const auto oracle = run(fn.scalar, in);
+            for (auto backend: fn.backends)
+                check(sameBits(run(backend, in), oracle));
+        }
+};
+
+// The scalar oracle's bits for a fixed input set, recorded on arm64. Every
+// backend is held to the oracle on the machine it runs on; this holds the
+// oracle itself to the same bits on every architecture and compiler. A
+// deliberate change to a math kernel changes these and must update them.
+auto tMathOracleMatchesRecordedBits =
+    test("ESIMD/mathOracleMatchesRecordedBits") = []
+{
+    const auto expected = EA::Vector<std::uint64_t> {0xa00bf52f21b4a3f6ull,
+                                                     0xc39cbb49352db7c4ull,
+                                                     0x94ab50f8a4b5d33aull,
+                                                     0x90550e2e6e48f4b8ull,
+                                                     0x8a424666c05d52c1ull,
+                                                     0xe3a2683965e079acull,
+                                                     0x56abf55924d86902ull};
+    const auto in = mathInputs(4096);
+    const auto functions = mathFunctions();
+    for (int i = 0; i < functions.size(); ++i)
+        check(hashOf(run(functions[i].scalar, in)) == expected[i]);
+};
+
+auto tMathAccuracyWithinDocumentedBound =
+    test("ESIMD/mathAccuracyWithinDocumentedBound") = []
+{
+    for (const auto& fn: mathFunctions())
+        check(maxUlpError(fn) <= fn.ulpBound, fn.name);
+};
+
+auto tMathSpecialValues = test("ESIMD/mathSpecialValues") = []
+{
+    const auto functions = mathFunctions();
+
+    checkSpecialCases(mathFunction(functions, "exp"),
+                      {{0.f, 1.f},
+                       {-0.f, 1.f},
+                       {kInf, kInf},
+                       {-kInf, 0.f},
+                       {kNaN, kNaN},
+                       {88.7229f, kInf},
+                       {1000.f, kInf},
+                       {-88.f, 0.f},
+                       {-1000.f, 0.f}});
+
+    // The largest float whose exponential is finite still gives a finite
+    // result, just below FLT_MAX.
+    for (auto y: run(&esimd::exp, filledFloats(19, 0x1.62e42ep+6f)))
+        check(std::isfinite(y) && y > 3.4e38f);
+
+    checkSpecialCases(mathFunction(functions, "exp2"),
+                      {{0.f, 1.f},
+                       {1.f, 2.f},
+                       {10.f, 1024.f},
+                       {-1.f, 0.5f},
+                       {-126.f, kMinNormal},
+                       {-127.f, 0.f},
+                       {127.f, 0x1p127f},
+                       {128.f, kInf},
+                       {kInf, kInf},
+                       {-kInf, 0.f},
+                       {kNaN, kNaN}});
+
+    checkSpecialCases(mathFunction(functions, "log"),
+                      {{1.f, 0.f},
+                       {0.f, -kInf},
+                       {-0.f, -kInf},
+                       {-1.f, kNaN},
+                       {-kInf, kNaN},
+                       {kInf, kInf},
+                       {kNaN, kNaN}});
+
+    checkSpecialCases(mathFunction(functions, "log2"),
+                      {{1.f, 0.f},
+                       {2.f, 1.f},
+                       {1024.f, 10.f},
+                       {0.5f, -1.f},
+                       {kMinNormal, -126.f},
+                       {0x1p-149f, -149.f},
+                       {0.f, -kInf},
+                       {-2.f, kNaN},
+                       {kInf, kInf},
+                       {kNaN, kNaN}});
+
+    checkSpecialCases(
+        mathFunction(functions, "sin"),
+        {{0.f, 0.f}, {-0.f, -0.f}, {kInf, kNaN}, {-kInf, kNaN}, {kNaN, kNaN}});
+
+    checkSpecialCases(
+        mathFunction(functions, "cos"),
+        {{0.f, 1.f}, {-0.f, 1.f}, {kInf, kNaN}, {-kInf, kNaN}, {kNaN, kNaN}});
+
+    checkSpecialCases(mathFunction(functions, "tanh"),
+                      {{0.f, 0.f},
+                       {-0.f, -0.f},
+                       {kInf, 1.f},
+                       {-kInf, -1.f},
+                       {20.f, 1.f},
+                       {-20.f, -1.f},
+                       {1e30f, 1.f},
+                       {kNaN, kNaN}});
+};
+
+// A NaN goes through untouched, payload and all, on every backend.
+auto tMathPassesNaNThrough = test("ESIMD/mathPassesNaNThrough") = []
+{
+    auto in = Floats(19);
+    for (int i = 0; i < in.size(); ++i)
+        in[i] = std::bit_cast<float>(0x7FC00000u + static_cast<std::uint32_t>(i));
+
+    for (const auto& fn: mathFunctions())
+    {
+        check(sameBits(run(fn.scalar, in), in), fn.name);
+        for (auto backend: fn.backends)
+            check(sameBits(run(backend, in), in), fn.name);
+    }
+};
+
+// Past the documented full-accuracy range sin and cos degrade, but never
+// leave [-1, 1]; past 2^22 they are not reduced at all.
+auto tSinCosStayBoundedBeyondTheirRange =
+    test("ESIMD/sinCosStayBoundedBeyondTheirRange") = []
+{
+    auto in = Floats {};
+    addRandom(in, 65536.0, 4194304.0, 20'000);
+    addRandom(in, -4194304.0, -65536.0, 20'000);
+
+    const auto functions = mathFunctions();
+    for (const auto& name: {"sin", "cos"})
+    {
+        const auto& fn = mathFunction(functions, name);
+        for (auto y: run(fn.scalar, in))
+            check(std::fabs(y) <= 1.f);
+    }
+
+    const auto huge = Floats {0x1p23f, -1e30f, 3e38f};
+    for (auto y: run(&esimd::sin, huge))
+        check(y == 0.f);
+    for (auto y: run(&esimd::cos, huge))
+        check(y == 1.f);
+};
+
+auto tMathInPlaceMatchesSeparateOutput =
+    test("ESIMD/mathInPlaceMatchesSeparateOutput") = []
+{
+    const auto in = mathInputs(1001);
+    for (const auto& fn: mathFunctions())
+    {
+        auto all = fn.backends;
+        all.add(fn.scalar);
+        for (auto backend: all)
+        {
+            auto buffer = in;
+            backend(buffer.data(), buffer.data(), buffer.size());
+            check(sameBits(buffer, run(backend, in)), fn.name);
+        }
+    }
+};
+
+auto tOpsExpInPlace = test("ESIMD/opsExpInPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::exp(v); }, &esimd::exp); };
+
+auto tOpsExp2InPlace = test("ESIMD/opsExp2InPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::exp2(v); }, &esimd::exp2); };
+
+auto tOpsLogInPlace = test("ESIMD/opsLogInPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::log(v); }, &esimd::log); };
+
+auto tOpsLog2InPlace = test("ESIMD/opsLog2InPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::log2(v); }, &esimd::log2); };
+
+auto tOpsSinInPlace = test("ESIMD/opsSinInPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::sin(v); }, &esimd::sin); };
+
+auto tOpsCosInPlace = test("ESIMD/opsCosInPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::cos(v); }, &esimd::cos); };
+
+auto tOpsTanhInPlace = test("ESIMD/opsTanhInPlace") = []
+{ checkInPlaceHelper([](Floats& v) { esimd::tanh(v); }, &esimd::tanh); };
+
+// The helpers take any contiguous float buffer, a Span's subview included,
+// and touch only what it covers.
+auto tOpsMathHelpersAcceptSpans = test("ESIMD/opsMathHelpersAcceptSpans") = []
+{
+    auto storage = Floats {0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f};
+    const auto original = storage;
+    auto head = EA::Span<float> {storage}.first(5);
+    esimd::exp(head);
+
+    auto expected = original;
+    esimd::exp(expected.data(), expected.data(), 5);
+    check(sameBits(storage, expected));
+
+    auto fixed = EA::Array<float, 4> {1.f, 2.f, 4.f, 8.f};
+    esimd::log2(fixed);
+    check(fixed[0] == 0.f && fixed[1] == 1.f && fixed[2] == 2.f && fixed[3] == 3.f);
 };

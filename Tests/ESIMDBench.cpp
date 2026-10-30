@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 // Micro-benchmark comparing the scalar reference against the active SIMD backend
 // for the ESIMD kernels, plus the float-array primitives (auto-vectorized vs
@@ -363,6 +365,148 @@ void benchArrayOps(int count)
         { esimd::multiplyAdd(a.data(), b.data(), c.data(), out.data(), count); });
 }
 
+// Non-vectorized std:: references for the math functions.
+template <float (*Fn)(float)>
+void scalarMath(const float* a, float* out, int n)
+{
+    ESIMD_NO_VECTORIZE
+    for (int i = 0; i < n; ++i)
+        out[i] = Fn(a[i]);
+}
+
+float stdExp(float x)
+{
+    return std::exp(x);
+}
+float stdExp2(float x)
+{
+    return std::exp2(x);
+}
+float stdLog(float x)
+{
+    return std::log(x);
+}
+float stdLog2(float x)
+{
+    return std::log2(x);
+}
+float stdSin(float x)
+{
+    return std::sin(x);
+}
+float stdCos(float x)
+{
+    return std::cos(x);
+}
+float stdTanh(float x)
+{
+    return std::tanh(x);
+}
+
+using MathFn = void (*)(const float*, float*, int);
+
+struct MathRow
+{
+    const char* name;
+    MathFn reference;
+    MathFn scalar;
+    MathFn baseline;
+    MathFn avx2;
+};
+
+EA::Vector<MathRow> mathRows()
+{
+    using namespace esimd::backends;
+    const char* names[] = {"exp", "exp2", "log", "log2", "sin", "cos", "tanh"};
+    const MathFn references[] = {&scalarMath<stdExp>,
+                                 &scalarMath<stdExp2>,
+                                 &scalarMath<stdLog>,
+                                 &scalarMath<stdLog2>,
+                                 &scalarMath<stdSin>,
+                                 &scalarMath<stdCos>,
+                                 &scalarMath<stdTanh>};
+    const MathFn scalars[] = {&exp_scalar,
+                              &exp2_scalar,
+                              &log_scalar,
+                              &log2_scalar,
+                              &sin_scalar,
+                              &cos_scalar,
+                              &tanh_scalar};
+#if defined(__x86_64__) || defined(_M_X64)
+    const MathFn baselines[] = {&exp_sse2,
+                                &exp2_sse2,
+                                &log_sse2,
+                                &log2_sse2,
+                                &sin_sse2,
+                                &cos_sse2,
+                                &tanh_sse2};
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    const MathFn baselines[] = {&exp_neon,
+                                &exp2_neon,
+                                &log_neon,
+                                &log2_neon,
+                                &sin_neon,
+                                &cos_neon,
+                                &tanh_neon};
+#else
+    const auto& baselines = scalars;
+#endif
+    MathFn avx2[] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+#if defined(ESIMD_HAS_AVX2)
+    if (esimd::cpu::hasAvx2Fma())
+    {
+        const MathFn available[] = {&exp_avx2,
+                                    &exp2_avx2,
+                                    &log_avx2,
+                                    &log2_avx2,
+                                    &sin_avx2,
+                                    &cos_avx2,
+                                    &tanh_avx2};
+        std::copy(std::begin(available), std::end(available), avx2);
+    }
+#endif
+
+    auto rows = EA::Vector<MathRow> {};
+    for (int i = 0; i < 7; ++i)
+        rows.add({names[i], references[i], scalars[i], baselines[i], avx2[i]});
+    return rows;
+}
+
+// The std:: function (scalar, not vectorized) against ESIMD's scalar oracle,
+// its baseline SIMD backend and, where the CPU has it, AVX2. The inputs lie
+// in (0, 8), inside every function's domain.
+void benchMath(int count)
+{
+    auto a = Floats(count);
+    for (int i = 0; i < count; ++i)
+        a[i] = static_cast<float>((i * 37) % 1000 + 1) * 0.008f;
+    auto out = Floats(count);
+    const int iters = std::max(20, 40'000'000 / count);
+
+    for (const auto& row: mathRows())
+    {
+        const auto time = [&](MathFn fn)
+        {
+            return timeMs(iters,
+                          bytes(a),
+                          a.size() * 4,
+                          bytes(out),
+                          [&] { fn(a.data(), out.data(), count); });
+        };
+
+        const auto referenceMs = time(row.reference);
+        std::printf("    %-5s | std    %8.3f ms %7.1f Melem/s",
+                    row.name,
+                    referenceMs,
+                    perSec(count, referenceMs));
+        report("esimd", count, time(row.scalar), referenceMs, "Melem/s");
+        report(baselineName(), count, time(row.baseline), referenceMs, "Melem/s");
+        if (row.avx2 != nullptr)
+            report("avx2", count, time(row.avx2), referenceMs, "Melem/s");
+        std::printf("\n");
+    }
+}
+
 // A text scan: a buffer of plain string bytes with the one special byte at the
 // very end, so every backend walks the whole thing. The input is left alone
 // (perturbing it would plant an early hit); the result is what the sink
@@ -450,6 +594,9 @@ int main()
                 baselineName());
     benchArrayOps(4096); // cache-resident: shows the vectorization win
     benchArrayOps(4'000'000); // larger than cache: memory-bandwidth-bound
+
+    std::printf("\nmath functions on 4096 elements (std:: scalar vs ESIMD):\n");
+    benchMath(4096);
 
     std::printf("\nchecksum %llu\n", static_cast<unsigned long long>(gSink));
     return 0;

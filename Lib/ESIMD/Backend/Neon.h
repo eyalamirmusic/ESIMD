@@ -116,6 +116,69 @@ struct Neon
 
         float32x4_t v;
     };
+
+    // Four signed 32-bit lanes (128-bit), the integer companion of F32.
+    struct I32
+    {
+        I32 operator+(I32 o) const { return {vaddq_s32(v, o.v)}; }
+        I32 operator-(I32 o) const { return {vsubq_s32(v, o.v)}; }
+        I32 operator&(I32 o) const { return {vandq_s32(v, o.v)}; }
+        I32 operator|(I32 o) const { return {vorrq_s32(v, o.v)}; }
+        I32 operator^(I32 o) const { return {veorq_s32(v, o.v)}; }
+
+        template <int N>
+        I32 shl() const
+        {
+            return {vshlq_n_s32(v, N)};
+        }
+
+        template <int N>
+        I32 shr() const
+        {
+            return {vshrq_n_s32(v, N)};
+        }
+
+        static I32 broadcast(std::int32_t x) { return {vdupq_n_s32(x)}; }
+
+        int32x4_t v;
+        static constexpr int lanes = 4;
+    };
+
+    // Four float lanes (128-bit). Comparisons are ordered and yield I32 masks.
+    // truncate saturates where cvttps gives INT32_MIN, which is why the
+    // kernels only convert values already known to be in range.
+    struct F32
+    {
+        F32 operator+(F32 o) const { return {vaddq_f32(v, o.v)}; }
+        F32 operator-(F32 o) const { return {vsubq_f32(v, o.v)}; }
+        F32 operator*(F32 o) const { return {vmulq_f32(v, o.v)}; }
+        F32 operator/(F32 o) const { return {vdivq_f32(v, o.v)}; }
+
+        I32 lessThan(F32 o) const { return mask(vcltq_f32(v, o.v)); }
+        I32 lessEqual(F32 o) const { return mask(vcleq_f32(v, o.v)); }
+        I32 equals(F32 o) const { return mask(vceqq_f32(v, o.v)); }
+        I32 isNaN() const { return mask(vmvnq_u32(vceqq_f32(v, v))); }
+
+        I32 bits() const { return {vreinterpretq_s32_f32(v)}; }
+        I32 truncate() const { return {vcvtq_s32_f32(v)}; }
+
+        static F32 fromBits(I32 a) { return {vreinterpretq_f32_s32(a.v)}; }
+        static F32 fromInt(I32 a) { return {vcvtq_f32_s32(a.v)}; }
+
+        static F32 select(I32 mask, F32 ifTrue, F32 ifFalse)
+        {
+            return {vbslq_f32(vreinterpretq_u32_s32(mask.v), ifTrue.v, ifFalse.v)};
+        }
+
+        static F32 broadcast(float x) { return {vdupq_n_f32(x)}; }
+        static F32 load(const float* p) { return {vld1q_f32(p)}; }
+        static void store(float* p, F32 a) { vst1q_f32(p, a.v); }
+
+        static I32 mask(uint32x4_t m) { return {vreinterpretq_s32_u32(m)}; }
+
+        float32x4_t v;
+        static constexpr int lanes = 4;
+    };
 };
 
 } // namespace esimd::backend

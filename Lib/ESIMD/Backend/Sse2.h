@@ -123,6 +123,68 @@ struct Sse2
 
         __m128 v;
     };
+
+    // Four signed 32-bit lanes (128-bit), the integer companion of F32.
+    struct I32
+    {
+        I32 operator+(I32 o) const { return {_mm_add_epi32(v, o.v)}; }
+        I32 operator-(I32 o) const { return {_mm_sub_epi32(v, o.v)}; }
+        I32 operator&(I32 o) const { return {_mm_and_si128(v, o.v)}; }
+        I32 operator|(I32 o) const { return {_mm_or_si128(v, o.v)}; }
+        I32 operator^(I32 o) const { return {_mm_xor_si128(v, o.v)}; }
+
+        template <int N>
+        I32 shl() const
+        {
+            return {_mm_slli_epi32(v, N)};
+        }
+
+        template <int N>
+        I32 shr() const
+        {
+            return {_mm_srai_epi32(v, N)};
+        }
+
+        static I32 broadcast(std::int32_t x) { return {_mm_set1_epi32(x)}; }
+
+        __m128i v;
+        static constexpr int lanes = 4;
+    };
+
+    // Four float lanes (128-bit). Comparisons are ordered and yield I32 masks.
+    struct F32
+    {
+        F32 operator+(F32 o) const { return {_mm_add_ps(v, o.v)}; }
+        F32 operator-(F32 o) const { return {_mm_sub_ps(v, o.v)}; }
+        F32 operator*(F32 o) const { return {_mm_mul_ps(v, o.v)}; }
+        F32 operator/(F32 o) const { return {_mm_div_ps(v, o.v)}; }
+
+        I32 lessThan(F32 o) const { return mask(_mm_cmplt_ps(v, o.v)); }
+        I32 lessEqual(F32 o) const { return mask(_mm_cmple_ps(v, o.v)); }
+        I32 equals(F32 o) const { return mask(_mm_cmpeq_ps(v, o.v)); }
+        I32 isNaN() const { return mask(_mm_cmpunord_ps(v, v)); }
+
+        I32 bits() const { return {_mm_castps_si128(v)}; }
+        I32 truncate() const { return {_mm_cvttps_epi32(v)}; }
+
+        static F32 fromBits(I32 a) { return {_mm_castsi128_ps(a.v)}; }
+        static F32 fromInt(I32 a) { return {_mm_cvtepi32_ps(a.v)}; }
+
+        static F32 select(I32 mask, F32 ifTrue, F32 ifFalse)
+        {
+            const auto m = _mm_castsi128_ps(mask.v);
+            return {_mm_or_ps(_mm_and_ps(m, ifTrue.v), _mm_andnot_ps(m, ifFalse.v))};
+        }
+
+        static F32 broadcast(float x) { return {_mm_set1_ps(x)}; }
+        static F32 load(const float* p) { return {_mm_loadu_ps(p)}; }
+        static void store(float* p, F32 a) { _mm_storeu_ps(p, a.v); }
+
+        static I32 mask(__m128 m) { return {_mm_castps_si128(m)}; }
+
+        __m128 v;
+        static constexpr int lanes = 4;
+    };
 };
 
 } // namespace esimd::backend
