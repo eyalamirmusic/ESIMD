@@ -20,6 +20,13 @@ namespace
 
 // A ByteClass compiled for backend B: every value and range bound broadcast
 // into a register once, so the per-vector test below is pure compares and ORs.
+//
+// MSVC's C4324 is off around it: valueCount after the vectors pads the struct
+// to their alignment, which is the layout wanted, and MSVC on ARM64 warns.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
 template <class B>
 struct ByteClassMatcher
 {
@@ -60,6 +67,9 @@ struct ByteClassMatcher
     V highs[ByteClass::maxRanges] {};
     int valueCount;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // Index of the first byte in [data, data + count) that is in `cls` (or, with
 // Negate, the first that is not), or `count` when there is none. The main loop
